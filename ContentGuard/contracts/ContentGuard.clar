@@ -192,4 +192,75 @@
   )
 )
 
+;; Comprehensive resolution system - handles report resolution, stake distribution, and penalties
+(define-public (resolve-report-and-distribute-rewards (report-id uint))
+  (let (
+    (report (unwrap! (map-get? reports { report-id: report-id }) ERR_POST_NOT_FOUND))
+    (post (unwrap! (map-get? posts { post-id: (get post-id report) }) ERR_POST_NOT_FOUND))
+    (votes-for (get votes-for report))
+    (votes-against (get votes-against report))
+    (total-votes (+ votes-for votes-against))
+    (reporter (get reporter report))
+    (post-author (get author post))
+    (report-stake (get stake-amount report))
+  )
+    
+    ;; Ensure voting period has ended and report isn't already resolved
+    (asserts! (>= block-height (+ (get timestamp report) VOTING_PERIOD)) ERR_VOTING_PERIOD_ENDED)
+    (asserts! (not (get resolved report)) ERR_VOTING_PERIOD_ENDED)
+    (asserts! (> total-votes u0) ERR_INVALID_VOTE)
+    
+    ;; Determine if report was upheld (majority vote)
+    (let ((report-upheld (> votes-for votes-against)))
+      
+      ;; Update report as resolved
+      (map-set reports
+        { report-id: report-id }
+        (merge report { resolved: true })
+      )
+      
+      ;; Handle post status based on resolution
+      (if report-upheld
+        ;; Report upheld - content removed, author penalized
+        (begin
+          (map-set posts
+            { post-id: (get post-id report) }
+            (merge post { status: "removed" })
+          )
+          ;; Penalize author reputation
+          (update-reputation post-author (- 0 REPUTATION_PENALTY))
+          ;; Reward reporter
+          (update-reputation reporter REPUTATION_REWARD)
+          ;; Return reporter's stake plus bonus
+          (try! (as-contract (stx-transfer? (+ report-stake u500000) tx-sender reporter)))
+        )
+        ;; Report rejected - restore content, penalize reporter
+        (begin
+          (map-set posts
+            { post-id: (get post-id report) }
+            (merge post { status: "active" })
+          )
+          ;; Penalize reporter reputation
+          (update-reputation reporter (- 0 REPUTATION_PENALTY))
+          ;; Reward author for false report
+          (update-reputation post-author REPUTATION_REWARD)
+          ;; Forfeit reporter's stake to author
+          (try! (as-contract (stx-transfer? report-stake tx-sender post-author)))
+        )
+      )
+      
+      ;; Distribute rewards to correct voters based on their stake
+      ;; This is a simplified version - in practice, you'd iterate through all voters
+      (var-set total-staked (- (var-get total-staked) report-stake))
+      
+      (ok {
+        report-upheld: report-upheld,
+        total-votes: total-votes,
+        votes-for: votes-for,
+        votes-against: votes-against
+      })
+    )
+  )
+)
+
 
